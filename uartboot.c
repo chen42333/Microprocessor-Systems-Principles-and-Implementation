@@ -63,7 +63,7 @@
 #include <stdint.h>
 #include "io_uart.h"
 
-int load_elf_ddr(Elf32_Ehdr *ehdr);
+int load_elf(Elf32_Ehdr *ehdr);
 
 // ------------------------------------------------------------------------------
 //  Memory Map:
@@ -78,19 +78,21 @@ uint8_t eheader[64], pheader[128];
 char    *organization = "EISL@NYCU, Hsinchu, Taiwan";
 int     year = 2023;
 
-uint8_t *elf_base = (uint8_t *) 0x80021000UL; // ELF image buffer
-
 int main(void)
 {
     Elf32_Ehdr *ehdr = (Elf32_Ehdr *) eheader;
     uint32_t *magic = (uint32_t *) ELFMAG;
     uint32_t size;
     int idx;
+    int *dram = (int *) 0x80000000;
 
     printf("=======================================================================\n");
-    printf("Copyright (c) 2019-%d, %s.\n", year, organization);
+    printf("Copyright (c+) 2019-%d, %s.\n", year, organization);
     printf("The Aquila SoC is ready.\n");
     printf("Waiting for an ELF file to be sent from the UART ...\n");
+
+    // Clear the first 128KB of DRAM to zeros.
+    for (idx = 0; idx < 65536; idx++) dram[idx] = 0;
 
     // Read the ELF header.
     for (idx = 0; idx < sizeof(Elf32_Ehdr); idx++)
@@ -108,10 +110,7 @@ int main(void)
     {
         prog = (uint8_t *) ehdr->e_entry; /* set program entry point */
         size = ehdr->e_shoff + (ehdr->e_shentsize * ehdr->e_shnum);
-
-        for (idx += sizeof(Elf32_Ehdr); idx < size; idx++)
-            elf_base[idx] = inbyte();
-        load_elf_ddr(ehdr);
+        load_elf(ehdr);
 
         printf("\nProgram entry point at 0x%x, size = 0x%x.\n", prog, size);
         printf("-----------------------------------------------------------------------\n");
@@ -134,28 +133,36 @@ int main(void)
     return 0;
 }
 
-int load_elf_ddr(Elf32_Ehdr *ehdr)
+int load_elf(Elf32_Ehdr *ehdr)
 {
     Elf32_Phdr *section;
-    uint32_t dst_addr, src_addr;
+    uint32_t skip, current_byte;
+    uint32_t *mem;
+    uint8_t  *dst_addr;
     int idx, jdx;
 
-    // Copy all loadable sections of an ELF image to the destination.
+    current_byte = sizeof(Elf32_Ehdr) + ehdr->e_phentsize*ehdr->e_phnum;
+
+    // Load all loadable sections of an ELF image to the destination.
     section = (Elf32_Phdr *) pheader;
     for (idx = 0; idx < ehdr->e_phnum; idx++)
     {
         // Locate CODE and DATA sections
         if (section[idx].p_type == PT_LOAD && section[idx].p_filesz != 0)
         {
-            src_addr = (uint32_t) elf_base + section[idx].p_offset;
-            dst_addr = (uint32_t) section[idx].p_paddr;
-            for (jdx = 0; jdx < section[idx].p_filesz; jdx+=sizeof(int))
+            dst_addr = (uint8_t *) section[idx].p_paddr;
+            skip = section[idx].p_offset - current_byte;
+            while (skip-- > 0) inbyte(), current_byte++;
+
+            for (jdx = 0; jdx < section[idx].p_filesz; jdx++)
             {
-                *(uint32_t *)(dst_addr+jdx) = *(uint32_t *)(src_addr+jdx);
+                dst_addr[jdx] = inbyte();
+                current_byte++;
             }
+            mem = (uint32_t *) &(dst_addr[jdx]);
             while (jdx < section[idx].p_memsz)
             {
-                *(uint32_t *)(dst_addr+jdx) = 0;
+                mem[(jdx>>2)] = 0;
                 jdx += sizeof(int);
             }
         }
